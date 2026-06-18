@@ -1,0 +1,9 @@
+smartapi-python>=1.4.8
+pyotp>=2.9.0
+pandas>=2.0.0
+numpy>=1.24.0
+yfinance>=0.2.40
+requests>=2.31.0
+apscheduler>=3.10.0
+websocket-client>=1.7.0
+pytz>=2024.1

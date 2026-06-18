@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+
+# WhatsApp Baileys session (sensitive!)
+whatsapp-service/auth_store/
+
+# Database & logs
+database/*.db
+database/*.db-wal
+database/*.db-shm
+logs/*.log
+
+# Local config with real credentials
+config/config.local.json
+
+# OS
+.DS_Store
+
+# Claude local settings
+.claude/settings.local.json

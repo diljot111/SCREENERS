@@ -1,0 +1,35 @@
+{
+    "angel_one": {
+        "api_key": "YOUR_ANGEL_ONE_API_KEY",
+        "client_id": "YOUR_CLIENT_ID",
+        "password": "YOUR_PASSWORD",
+        "totp_secret": "YOUR_TOTP_SECRET"
+    },
+    "whatsapp": {
+        "service_url": "http://localhost:3001/send-message",
+        "target_phone": "919876543210",
+        "max_daily_messages": 400,
+        "delay_between_messages_sec": 2,
+        "max_retries": 5,
+        "retry_interval_sec": 30
+    },
+    "screener": {
+        "scan_interval_minutes": 2,
+        "bollinger_period": 20,
+        "bollinger_std": 2,
+        "ema_period": 9,
+        "history_lookback_days": 30,
+        "history_candles_required": 25,
+        "market_open": "09:15",
+        "market_close": "15:30",
+        "websocket_subscribe_batch": 1000,
+        "db_batch_size": 500
+    },
+    "database": {
+        "path": "database/screener.db"
+    },
+    "logging": {
+        "path": "logs/screener.log",
+        "level": "INFO"
+    }
+}

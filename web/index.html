@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>📈 Stock Screener Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+  <!-- TradingView Lightweight Charts (candlesticks + indicator overlays) -->
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">📈</span>
+      <div>
+        <h1>NSE Stock Screener</h1>
+        <p class="sub">9 EMA × BB Middle&nbsp;&nbsp;+&nbsp;&nbsp;VWAP × BB Upper&nbsp;·&nbsp;Daily timeframe</p>
+      </div>
+    </div>
+    <div class="stats" id="stats">
+      <div class="stat"><span class="num" id="statSymbols">–</span><span class="lbl">Symbols</span></div>
+      <div class="stat ready"><span class="num" id="statReady">–</span><span class="lbl">Ready to Buy</span></div>
+      <div class="stat"><span class="num" id="statAlerts">–</span><span class="lbl">Alerts Today</span></div>
+      <div class="stat"><span class="num" id="statShown">–</span><span class="lbl">Showing</span></div>
+    </div>
+  </header>
+
+  <section class="controls">
+    <input type="search" id="search" placeholder="🔍 Search symbol or name…" autocomplete="off" />
+
+    <div class="filter-group" role="group" aria-label="Signal filter">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn" data-filter="ready">✅ Ready to Buy</button>
+      <button class="filter-btn" data-filter="ema">9 EMA × BB Mid</button>
+      <button class="filter-btn" data-filter="vwap">VWAP × BB Upper</button>
+    </div>
+
+    <div class="indicator-toggles" aria-label="Indicator lines">
+      <label><input type="checkbox" id="tgEma" checked /> <span class="swatch ema"></span> 9 EMA</label>
+      <label><input type="checkbox" id="tgBb" checked /> <span class="swatch bb"></span> Bollinger</label>
+      <label><input type="checkbox" id="tgVwap" checked /> <span class="swatch vwap"></span> VWAP</label>
+    </div>
+
+    <div class="spacer"></div>
+    <button id="notifBtn" class="notif-btn">🔔 Notifications <span class="badge" id="notifBadge">0</span></button>
+    <button id="refreshBtn" class="refresh-btn" title="Refresh data">⟳</button>
+  </section>
+
+  <main id="grid" class="grid">
+    <div class="empty" id="emptyState">Loading charts…</div>
+  </main>
+
+  <!-- Notifications drawer -->
+  <aside id="drawer" class="drawer">
+    <div class="drawer-head">
+      <h2>🔔 Notifications</h2>
+      <button id="drawerClose" class="icon-btn">✕</button>
+    </div>
+    <div class="drawer-actions">
+      <button id="sendTestBtn" class="test-btn">Send test WhatsApp alert</button>
+      <p id="testResult" class="test-result"></p>
+    </div>
+    <div id="notifList" class="notif-list"></div>
+  </aside>
+  <div id="overlay" class="overlay"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

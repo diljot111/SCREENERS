@@ -1,0 +1,32 @@
+[
+    {
+        "symbol": "RELIANCE",
+        "token": "2885",
+        "tradingsymbol": "RELIANCE-EQ",
+        "name": "RELIANCE INDUSTRIES LTD"
+    },
+    {
+        "symbol": "TCS",
+        "token": "11536",
+        "tradingsymbol": "TCS-EQ",
+        "name": "TATA CONSULTANCY SERVICES LTD"
+    },
+    {
+        "symbol": "INFY",
+        "token": "1594",
+        "tradingsymbol": "INFY-EQ",
+        "name": "INFOSYS LTD"
+    },
+    {
+        "symbol": "HDFCBANK",
+        "token": "1333",
+        "tradingsymbol": "HDFCBANK-EQ",
+        "name": "HDFC BANK LTD"
+    },
+    {
+        "symbol": "ICICIBANK",
+        "token": "4963",
+        "tradingsymbol": "ICICIBANK-EQ",
+        "name": "ICICI BANK LTD"
+    }
+]
