@@ -249,6 +249,30 @@ It reads from the same `database/screener.db`, so once the real engine
 (`main.py`) is running and the DB has live candles, the dashboard reflects them
 (it auto-refreshes every 60s).
 
+### Deploy the dashboard to Vercel (static hosting)
+
+The live engine (broker WebSocket, screener loop, WhatsApp service) needs a
+long-running process and **cannot** run on Vercel's serverless platform. But the
+**dashboard frontend can** — it falls back to pre-exported JSON snapshots when no
+Python API is present.
+
+1. Export a snapshot of the current DB to `web/data/`:
+   ```bash
+   python scripts/seed_demo_data.py      # or backfill_history.py for real data
+   python scripts/export_static.py       # writes web/data/{dashboard,alerts,stats}.json
+   git add web/data && git commit -m "Update dashboard snapshot" && git push
+   ```
+2. Import the repo at <https://vercel.com/new>. `vercel.json` already points the
+   output directory at `web/`, so no build step or framework preset is needed —
+   just deploy.
+3. The deployed site reads `web/data/*.json` (the snapshot). Re-run step 1 and
+   push to refresh the data shown online. Running `web_server.py` locally still
+   uses the live `/api/*` automatically.
+
+> Note: the "Send test WhatsApp alert" button needs the local backend +
+> `whatsapp-service`; on the static Vercel deployment it will report the backend
+> is unreachable (expected).
+
 ### Dashboard API
 
 | Method | Endpoint | Purpose |

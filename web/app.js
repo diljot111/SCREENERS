@@ -30,6 +30,26 @@ async function getJSON(url, opts) {
   return r.json();
 }
 
+/* Try the live API first; fall back to a static JSON snapshot (Vercel/static
+   hosting has no Python backend, so it serves pre-exported files in web/data/). */
+async function apiOrStatic(apiUrl, staticUrl) {
+  try {
+    const r = await fetch(apiUrl, { cache: "no-store" });
+    if (r.ok) return await r.json();
+  } catch (_) { /* backend not present — fall through to static */ }
+  return getJSON(staticUrl);
+}
+
+/* client-side mirror of web_server._passes_filter so one snapshot serves all filters */
+function passesFilter(sig, flt) {
+  if (!flt || flt === "all") return true;
+  if (!sig) return false;
+  if (flt === "ready") return !!sig.ready;
+  if (flt === "ema") return !!sig.ema_crossed_bb_middle;
+  if (flt === "vwap") return !!sig.vwap_crossed_bb_upper;
+  return true;
+}
+
 /* line data with nulls (warm-up rows) stripped — charts need contiguous points */
 function lineData(series, key) {
   const out = [];
@@ -151,7 +171,12 @@ function render() {
   disposeCharts();
   grid.innerHTML = "";
 
-  const visible = state.cards.filter(cardMatchesSearch);
+  const visible = state.cards.filter(
+    (c) => passesFilter(c.signal, state.filter) && cardMatchesSearch(c)
+  );
+  // stats reflect the full dataset / current view
+  $("#statReady").textContent = state.cards.filter((c) => c.signal && c.signal.ready).length;
+  $("#statShown").textContent = visible.length;
   if (!visible.length) {
     grid.innerHTML = `<div class="empty">No stocks match this filter.${
       state.filter !== "all" ? " Try “All”." : " Run the screener or seed demo data."}</div>`;
@@ -166,21 +191,21 @@ function render() {
 async function loadDashboard() {
   $("#grid").innerHTML = `<div class="empty">Loading charts…</div>`;
   try {
-    const data = await getJSON(`/api/dashboard?filter=${state.filter}&limit=200`);
+    // fetch the full set once (filter=all); filtering happens client-side so the
+    // same payload / static snapshot serves every filter button.
+    const data = await apiOrStatic(`/api/dashboard?filter=all&limit=10000`, `data/dashboard.json`);
     state.cards = data.cards || [];
-    $("#statSymbols").textContent = data.total_symbols;
-    $("#statReady").textContent = data.ready_count;
-    $("#statShown").textContent = data.shown;
+    $("#statSymbols").textContent = data.total_symbols ?? state.cards.length;
     render();
   } catch (e) {
-    $("#grid").innerHTML = `<div class="empty">⚠️ Could not load data: ${e.message}<br/>Is web_server.py running?</div>`;
+    $("#grid").innerHTML = `<div class="empty">⚠️ Could not load data: ${e.message}<br/>Run the server or export a static snapshot.</div>`;
   }
   loadStats();
 }
 
 async function loadStats() {
   try {
-    const s = await getJSON("/api/stats");
+    const s = await apiOrStatic("/api/stats", "data/stats.json");
     $("#statAlerts").textContent = s.messages_sent ?? 0;
   } catch (_) {}
 }
@@ -189,7 +214,7 @@ async function loadAlerts() {
   const list = $("#notifList");
   list.innerHTML = `<div class="notif-empty">Loading…</div>`;
   try {
-    const { alerts } = await getJSON("/api/alerts?limit=80");
+    const { alerts } = await apiOrStatic("/api/alerts?limit=80", "data/alerts.json");
     $("#notifBadge").textContent = alerts.length;
     if (!alerts.length) {
       list.innerHTML = `<div class="notif-empty">No notifications yet.<br/>Alerts appear here when a stock signals.</div>`;
@@ -218,7 +243,7 @@ function wire() {
       document.querySelectorAll(".filter-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       state.filter = btn.dataset.filter;
-      loadDashboard();
+      render();
     });
   });
 
