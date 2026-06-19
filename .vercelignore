@@ -1,0 +1,13 @@
+# Vercel hosts ONLY the static dashboard in web/.
+# Everything below is backend that runs locally, not on Vercel.
+python-engine/
+whatsapp-service/
+scripts/
+config/
+database/
+logs/
+__MACOSX/
+*.db
+*.db-wal
+*.db-shm
+*.log
