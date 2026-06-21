@@ -289,6 +289,26 @@ runs:
   `localStorage`). The dashboard will then fetch status/QR/history and send
   through that backend.
 
+#### One command to make the hosted site work (Windows)
+
+```powershell
+winget install Cloudflare.cloudflared        # once
+powershell -ExecutionPolicy Bypass -File scripts\serve_public.ps1
+```
+
+`serve_public.ps1` starts the WhatsApp service + dashboard API + a Cloudflare
+quick tunnel, then prints a ready-to-open link:
+
+```
+https://screeners-hgg6.vercel.app/?api=https://<random>.trycloudflare.com
+```
+
+Open that link — the hosted dashboard now talks to your PC, so WhatsApp shows
+**Connected**, charts load, and **Send Ready-to-Buy** works. The tunnel URL
+changes each run (quick tunnels are ephemeral); keep the window open while you
+use it. The Python server already sends permissive CORS headers so the
+cross-origin calls from `*.vercel.app` succeed.
+
 ### Dashboard API
 
 | Method | Endpoint | Purpose |
