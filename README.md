@@ -273,6 +273,22 @@ Python API is present.
 > `whatsapp-service`; on the static Vercel deployment it will report the backend
 > is unreachable (expected).
 
+#### Why WhatsApp / QR can't run on Vercel
+
+The WhatsApp service is a **stateful, always-on Node process** (Baileys keeps a
+live socket + session). Vercel is **serverless** — it can't host a long-running
+connection, so on the hosted site the WhatsApp panel shows *"No backend
+connected"* with instructions. The QR + sending only work where the backend
+runs:
+
+- **Locally** — run `whatsapp-service` + `web_server.py`, open
+  `http://localhost:8000`; the QR appears in the 🔔 panel when not linked.
+- **Hosted dashboard + your backend** — run the backend somewhere reachable
+  (your PC via a tunnel like cloudflared/ngrok, or a VPS/Render) and point the
+  hosted page at it by adding `?api=https://your-backend` to the URL (saved to
+  `localStorage`). The dashboard will then fetch status/QR/history and send
+  through that backend.
+
 ### Dashboard API
 
 | Method | Endpoint | Purpose |

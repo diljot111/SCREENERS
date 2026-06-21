@@ -20,6 +20,16 @@ const state = {
 const $ = (sel) => document.querySelector(sel);
 const fmt = (v) => (v == null ? "–" : "₹" + Number(v).toLocaleString("en-IN", { maximumFractionDigits: 2 }));
 
+/* Optional backend base URL. On a static host (Vercel) there is no backend, but
+   you can point this page at one you run/tunnel:  ?api=https://your-backend
+   (persisted to localStorage). Empty string = same-origin (local web_server). */
+const API_BASE = (() => {
+  const q = new URLSearchParams(location.search).get("api");
+  if (q !== null) { try { localStorage.setItem("apiBase", q); } catch (_) {} return q; }
+  try { return localStorage.getItem("apiBase") || ""; } catch (_) { return ""; }
+})();
+const api = (path) => API_BASE.replace(/\/$/, "") + path;
+
 async function getJSON(url, opts) {
   const r = await fetch(url, opts);
   if (!r.ok) {
@@ -34,7 +44,7 @@ async function getJSON(url, opts) {
    hosting has no Python backend, so it serves pre-exported files in web/data/). */
 async function apiOrStatic(apiUrl, staticUrl) {
   try {
-    const r = await fetch(apiUrl, { cache: "no-store" });
+    const r = await fetch(api(apiUrl), { cache: "no-store" });
     if (r.ok) return await r.json();
   } catch (_) { /* backend not present — fall through to static */ }
   return getJSON(staticUrl);
@@ -337,7 +347,7 @@ function wire() {
     const res = $("#testResult");
     res.textContent = "Sending…"; res.className = "test-result";
     try {
-      const r = await getJSON("/api/send-test", { method: "POST" });
+      const r = await getJSON(api("/api/send-test"), { method: "POST" });
       res.textContent = r.ok ? "✅ Sent to WhatsApp." : `❌ ${r.detail}`;
       res.className = "test-result " + (r.ok ? "ok" : "err");
       loadWhatsApp();
@@ -351,7 +361,7 @@ function wire() {
     if (!$("#drawer").classList.contains("open")) openDrawer();
     res.textContent = "Sending ready-to-buy alerts…"; res.className = "test-result";
     try {
-      const r = await getJSON("/api/whatsapp/send-ready", { method: "POST" });
+      const r = await getJSON(api("/api/whatsapp/send-ready"), { method: "POST" });
       if (r.ready === 0) {
         res.textContent = "ℹ️ No stocks are ready to buy right now.";
         res.className = "test-result";
@@ -390,36 +400,75 @@ function setWaChip(connected, text) {
 }
 
 async function loadWhatsApp() {
-  let status;
-  try {
-    status = await getJSON("/api/whatsapp/status");
-  } catch (_) {
-    status = { connected: false, error: "service unreachable" };
-  }
-  const connected = !!status.connected;
-  setWaChip(connected, connected ? "WhatsApp connected" : "WhatsApp offline");
-  $("#waState").textContent = connected ? "✅ Connected" : (status.error ? "⚠️ Service not running" : "❌ Not connected — scan QR");
-  $("#waMe").textContent = connected && status.me ? `${status.me.name || ""} (${(status.me.id || "").split(":")[0]})` : "";
-
-  // QR (only when not connected)
+  const stateEl = $("#waState");
+  const meEl = $("#waMe");
   const qrBox = $("#waQrBox");
+
+  // 1) Can we reach the backend (web_server) at all?
+  let status = null, backendReachable = true;
+  try {
+    status = await getJSON(api("/api/whatsapp/status"));
+  } catch (_) {
+    backendReachable = false;
+  }
+
+  if (!backendReachable) {
+    // No backend — typically the static (Vercel) deployment.
+    setWaChip(false, "No backend");
+    stateEl.textContent = "⚠️ No backend connected";
+    qrBox.hidden = true;
+    meEl.innerHTML = API_BASE
+      ? `Couldn't reach the backend at <code>${API_BASE}</code>. Is it running and publicly reachable?`
+      : `This is the <b>static hosted site</b> — it has no server, so WhatsApp can't run here.
+         <br><br><b>To link & send:</b>
+         <br>1) On your PC: <code>cd whatsapp-service &amp;&amp; node index.js</code>
+         <br>2) <code>cd python-engine &amp;&amp; python web_server.py 8000</code>
+         <br>3) Open <code>http://localhost:8000</code> (QR shows here).
+         <br><br>Or point this page at a reachable backend: add
+         <code>?api=https://your-backend</code> to the URL.`;
+    $("#waHistory").innerHTML = `<div class="notif-empty">Sent history needs the backend running.</div>`;
+    return;
+  }
+
+  const connected = !!status.connected;
+
   if (connected) {
+    setWaChip(true, "WhatsApp connected");
+    stateEl.textContent = "✅ Connected";
+    meEl.textContent = status.me ? `${status.me.name || ""} (${(status.me.id || "").split(":")[0]})` : "Linked";
     qrBox.hidden = true;
   } else {
-    try {
-      const q = await getJSON("/api/whatsapp/qr");
-      if (q.qr && window.QRCode) {
-        qrBox.hidden = false;
-        QRCode.toCanvas($("#waQrCanvas"), q.qr, { width: 230, margin: 1 }, () => {});
+    setWaChip(false, "WhatsApp disconnected");
+    // backend is up but WhatsApp isn't linked → try to show a QR, else explain why
+    let q = {};
+    try { q = await getJSON(api("/api/whatsapp/qr")); } catch (_) {}
+
+    if (q.qr && window.QRCode) {
+      stateEl.textContent = "❌ Not linked — scan the QR";
+      meEl.textContent = "Open WhatsApp → Linked Devices → Link a Device:";
+      qrBox.hidden = false;
+      QRCode.toCanvas($("#waQrCanvas"), q.qr, { width: 230, margin: 1 }, () => {});
+    } else {
+      qrBox.hidden = true;
+      const reason = status.error || "";
+      if (reason) {
+        // /status itself failed → the WhatsApp Node service isn't running
+        stateEl.textContent = "⚠️ WhatsApp service not running";
+        meEl.innerHTML = `Reason: <code>${reason}</code>
+          <br>Start it: <code>cd whatsapp-service &amp;&amp; node index.js</code>`;
       } else {
-        qrBox.hidden = true;
+        // service is up but no QR exposed (older build) or still initialising
+        stateEl.textContent = "❌ Not linked — waiting for QR";
+        meEl.innerHTML = `No QR yet. ${status.legacy
+          ? "The running service is an older build without a web QR — restart it to expose one: "
+          : "Give it a few seconds, or restart the service: "}<code>cd whatsapp-service &amp;&amp; node index.js</code>`;
       }
-    } catch (_) { qrBox.hidden = true; }
+    }
   }
 
-  // sent-message history (from the WhatsApp service)
+  // sent-message history
   try {
-    const h = await getJSON("/api/whatsapp/history");
+    const h = await getJSON(api("/api/whatsapp/history"));
     renderWaHistory(h.messages || []);
   } catch (_) {
     $("#waHistory").innerHTML = `<div class="notif-empty">WhatsApp service not running.<br/>Start it: <code>cd whatsapp-service &amp;&amp; node index.js</code></div>`;
