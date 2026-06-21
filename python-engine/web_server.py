@@ -83,23 +83,39 @@ class DashboardData:
 
     # ----- dashboard summary ------------------------------------------------- #
 
-    def dashboard(self, limit=200, flt="all"):
-        """Summary card data (with embedded series) for symbols that have candles."""
+    def dashboard(self, limit=10000, flt="all", summary=False):
+        """
+        Card data for every symbol that has candles.
+
+        summary=True omits the heavy per-candle `series` (returns only the signal
+        + last price + change%), so the dashboard can list thousands of stocks in
+        a small payload and lazy-load each chart's data on demand. summary=False
+        embeds the full series (used for the static Vercel snapshot).
+        """
         symbols = self.db.list_candle_symbols()
         cards = []
         ready_count = 0
 
         for symbol in symbols:
-            payload = self.symbol_series(symbol)
-            if payload is None:
+            candles = self.db.get_all_candles(symbol)
+            if not candles:
                 continue
-            sig = payload["signal"]
+            series = compute_indicator_series(candles, self.bb_period, self.bb_std, self.ema_period)
+            sig = evaluate_daily_signal(series)
             if sig and sig.get("ready"):
                 ready_count += 1
-
             if not _passes_filter(sig, flt):
                 continue
-            cards.append(payload)
+
+            name = self.name_by_symbol.get(symbol, symbol)
+            if summary:
+                change_pct = None
+                if len(series) >= 2 and series[-1]["close"] and series[-2]["close"]:
+                    change_pct = (series[-1]["close"] - series[-2]["close"]) / series[-2]["close"] * 100
+                cards.append({"symbol": symbol, "name": name, "signal": sig,
+                              "change_pct": change_pct})
+            else:
+                cards.append({"symbol": symbol, "name": name, "series": series, "signal": sig})
             if len(cards) >= limit:
                 break
 
@@ -296,9 +312,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 self._send_json({"status": "ok", "time": now_ist().strftime("%H:%M:%S")})
             elif path == "/api/dashboard":
-                limit = int(qs.get("limit", ["200"])[0])
+                limit = int(qs.get("limit", ["10000"])[0])
                 flt = qs.get("filter", ["all"])[0]
-                self._send_json(self.data.dashboard(limit=limit, flt=flt))
+                summary = qs.get("summary", ["0"])[0] in ("1", "true", "yes")
+                self._send_json(self.data.dashboard(limit=limit, flt=flt, summary=summary))
             elif path.startswith("/api/candles/"):
                 symbol = path[len("/api/candles/"):].strip("/").upper()
                 payload = self.data.symbol_series(symbol)

@@ -120,7 +120,8 @@ html, body {
   font-size: 11px; padding: 2px 8px; border-radius: 20px;
 }
 
-.chart { width: 100%; height: 240px; }
+.chart { width: 100%; height: 240px; position: relative; }
+.chart-ph { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted); font-size: 12px; }
 
 .card-foot {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;

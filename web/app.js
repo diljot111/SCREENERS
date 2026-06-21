@@ -50,6 +50,9 @@ function passesFilter(sig, flt) {
   return true;
 }
 
+/* filesystem/URL-safe symbol name for static candle files (matches export_static.py) */
+const safeName = (s) => s.replace(/[^A-Za-z0-9._-]/g, "_");
+
 /* line data with nulls (warm-up rows) stripped — charts need contiguous points */
 function lineData(series, key) {
   const out = [];
@@ -74,11 +77,17 @@ function cardMatchesSearch(card) {
 function buildCard(card) {
   const sig = card.signal || {};
   const ready = !!sig.ready;
-  const last = card.series[card.series.length - 1] || {};
-  const prev = card.series[card.series.length - 2] || {};
-  const chg = last.close != null && prev.close != null ? last.close - prev.close : null;
-  const chgPct = chg != null && prev.close ? (chg / prev.close) * 100 : null;
-  const dir = chg == null ? "" : chg >= 0 ? "up" : "down";
+  // works for both summary cards (signal only) and full cards (with series)
+  const last = card.series ? (card.series[card.series.length - 1] || {}) : {
+    close: sig.price, ema9: sig.ema9, bb_upper: sig.bb_upper, vwap: sig.vwap,
+  };
+  let chgPct = card.change_pct;
+  if (chgPct == null && card.series) {
+    const prev = card.series[card.series.length - 2] || {};
+    if (last.close != null && prev.close != null && prev.close)
+      chgPct = ((last.close - prev.close) / prev.close) * 100;
+  }
+  const dir = chgPct == null ? "" : chgPct >= 0 ? "up" : "down";
 
   const el = document.createElement("div");
   el.className = "card" + (ready ? " is-ready" : "");
@@ -96,10 +105,10 @@ function buildCard(card) {
           : `<span class="watch-badge">${signalHint(sig)}</span>`}
       </div>
     </div>
-    <div class="chart" id="chart-${card.symbol}"></div>
+    <div class="chart" id="chart-${card.symbol}"><div class="chart-ph">▤ chart loads on scroll</div></div>
     <div class="card-foot">
       <div class="metric ${dir}"><span class="m-lbl">Change</span><span class="m-val">${
-        chg == null ? "–" : (chg >= 0 ? "+" : "") + chgPct.toFixed(2) + "%"}</span></div>
+        chgPct == null ? "–" : (chgPct >= 0 ? "+" : "") + chgPct.toFixed(2) + "%"}</span></div>
       <div class="metric"><span class="m-lbl">9 EMA</span><span class="m-val">${fmt(last.ema9)}</span></div>
       <div class="metric"><span class="m-lbl">BB Up</span><span class="m-val">${fmt(last.bb_upper)}</span></div>
       <div class="metric"><span class="m-lbl">VWAP</span><span class="m-val">${fmt(last.vwap)}</span></div>
@@ -116,9 +125,10 @@ function signalHint(sig) {
   return "Watching";
 }
 
-function drawChart(card) {
-  const container = document.getElementById(`chart-${card.symbol}`);
-  if (!container || !window.LightweightCharts) return;
+function drawChart(symbol, seriesData) {
+  const container = document.getElementById(`chart-${symbol}`);
+  if (!container || !window.LightweightCharts || state.charts.has(symbol)) return;
+  container.innerHTML = ""; // clear placeholder
 
   const chart = LightweightCharts.createChart(container, {
     layout: { background: { color: "transparent" }, textColor: "#8a94a7" },
@@ -135,7 +145,7 @@ function drawChart(card) {
     borderUpColor: COLORS.up, borderDownColor: COLORS.down,
     wickUpColor: COLORS.up, wickDownColor: COLORS.down,
   });
-  candle.setData(candleData(card.series));
+  candle.setData(candleData(seriesData));
 
   const series = { candle };
 
@@ -143,21 +153,58 @@ function drawChart(card) {
     series.bbUpper = chart.addLineSeries({ color: COLORS.bb, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
     series.bbMid = chart.addLineSeries({ color: COLORS.bb, lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
     series.bbLower = chart.addLineSeries({ color: COLORS.bb, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-    series.bbUpper.setData(lineData(card.series, "bb_upper"));
-    series.bbMid.setData(lineData(card.series, "bb_middle"));
-    series.bbLower.setData(lineData(card.series, "bb_lower"));
+    series.bbUpper.setData(lineData(seriesData, "bb_upper"));
+    series.bbMid.setData(lineData(seriesData, "bb_middle"));
+    series.bbLower.setData(lineData(seriesData, "bb_lower"));
   }
   if (state.show.ema) {
     series.ema = chart.addLineSeries({ color: COLORS.ema, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
-    series.ema.setData(lineData(card.series, "ema9"));
+    series.ema.setData(lineData(seriesData, "ema9"));
   }
   if (state.show.vwap) {
     series.vwap = chart.addLineSeries({ color: COLORS.vwap, lineWidth: 2, lineStyle: 1, priceLineVisible: false, lastValueVisible: false });
-    series.vwap.setData(lineData(card.series, "vwap"));
+    series.vwap.setData(lineData(seriesData, "vwap"));
   }
 
   chart.timeScale().fitContent();
-  state.charts.set(card.symbol, { chart, series });
+  state.charts.set(symbol, { chart, series });
+}
+
+/* Lazy chart loading: draw a card's chart only when it scrolls into view.
+   Cards that ship full series (static snapshot) draw from that; summary cards
+   fetch /api/candles/<symbol> on demand. */
+const seriesCache = new Map();
+let chartObserver = null;
+
+function ensureObserver() {
+  if (chartObserver) return chartObserver;
+  chartObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const symbol = entry.target.dataset.symbol;
+      chartObserver.unobserve(entry.target);
+      loadAndDrawChart(symbol);
+    }
+  }, { rootMargin: "300px" });
+  return chartObserver;
+}
+
+async function loadAndDrawChart(symbol) {
+  if (state.charts.has(symbol)) return;
+  let seriesData = seriesCache.get(symbol);
+  if (!seriesData) {
+    const card = state.cards.find((c) => c.symbol === symbol);
+    if (card && card.series) {
+      seriesData = card.series;
+    } else {
+      try {
+        const payload = await apiOrStatic(`/api/candles/${symbol}`, `data/candles/${safeName(symbol)}.json`);
+        seriesData = payload.series || [];
+      } catch (_) { return; }
+    }
+    seriesCache.set(symbol, seriesData);
+  }
+  drawChart(symbol, seriesData);
 }
 
 function disposeCharts() {
@@ -165,6 +212,7 @@ function disposeCharts() {
     try { chart.remove(); } catch (_) {}
   }
   state.charts.clear();
+  if (chartObserver) { chartObserver.disconnect(); chartObserver = null; }
 }
 
 function render() {
@@ -183,9 +231,14 @@ function render() {
       state.filter !== "all" ? " Try “All”." : " Run the screener or seed demo data."}</div>`;
     return;
   }
-  for (const card of visible) grid.appendChild(buildCard(card));
-  // draw after the DOM nodes exist & have width
-  requestAnimationFrame(() => visible.forEach(drawChart));
+  const obs = ensureObserver();
+  for (const card of visible) {
+    const el = buildCard(card);
+    grid.appendChild(el);
+    // observe the chart container so it draws when scrolled into view
+    const chartEl = el.querySelector(".chart");
+    if (chartEl) { chartEl.dataset.symbol = card.symbol; obs.observe(chartEl); }
+  }
 }
 
 /* ------------------------------------------------------------------- data */
@@ -194,7 +247,7 @@ async function loadDashboard() {
   try {
     // fetch the full set once (filter=all); filtering happens client-side so the
     // same payload / static snapshot serves every filter button.
-    const data = await apiOrStatic(`/api/dashboard?filter=all&limit=10000`, `data/dashboard.json`);
+    const data = await apiOrStatic(`/api/dashboard?filter=all&summary=1&limit=10000`, `data/dashboard.json`);
     state.cards = data.cards || [];
     $("#statSymbols").textContent = data.total_symbols ?? state.cards.length;
     render();
