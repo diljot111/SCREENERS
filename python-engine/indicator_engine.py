@@ -137,31 +137,40 @@ def compute_indicator_series(candles, bb_period=20, bb_std=2, ema_period=9):
 
 def evaluate_daily_signal(series):
     """
-    Evaluate the crossover filter on a daily indicator series (for the dashboard).
+    Evaluate a DAILY (end-of-day) buy signal for the dashboard.
 
-    This mirrors screener.check_signal but works purely from closed daily candles
-    (no live tick feed): it compares the last two rows of the series. The VWAP
-    proxy (typical price) stands in for intraday VWAP.
+    The live screener's signal (screener.check_signal) is an *intraday* dual
+    crossover that needs a live VWAP feed and rarely fires on closed daily bars.
+    For an EOD dashboard we use the daily-appropriate equivalent of the same idea
+    — momentum turning up + a breakout:
 
-    Returns a dict describing each condition and an overall `ready` flag, or None
-    if there isn't enough data.
+        * uptrend   : 9 EMA is above the BB middle line, and
+        * breakout  : the close is above the BB upper band.
+
+    ``ready`` is true when BOTH hold (a clean bullish breakout). We also expose
+    the *fresh-cross* flags (the value was at/below the band on the previous bar
+    and above it now) for the filter buttons. Returns None if data is short.
     """
     if len(series) < 2:
         return None
     prev, cur = series[-2], series[-1]
-    needed = (prev["ema9"], prev["bb_middle"], prev["bb_upper"], prev["vwap"],
-              cur["ema9"], cur["bb_middle"], cur["bb_upper"], cur["vwap"])
+    needed = (prev["ema9"], prev["bb_middle"], prev["bb_upper"], prev["close"],
+              cur["ema9"], cur["bb_middle"], cur["bb_upper"], cur["close"])
     if any(v is None for v in needed):
         return None
 
-    ema_crossed = (prev["ema9"] <= prev["bb_middle"]) and (cur["ema9"] > cur["bb_middle"])
-    vwap_crossed = (prev["vwap"] <= prev["bb_upper"]) and (cur["vwap"] > cur["bb_upper"])
+    ema_above = cur["ema9"] > cur["bb_middle"]
+    close_above_upper = cur["close"] > cur["bb_upper"]
+    ema_crossed = (prev["ema9"] <= prev["bb_middle"]) and ema_above
+    close_crossed_upper = (prev["close"] <= prev["bb_upper"]) and close_above_upper
+
     return {
-        "ema_above_bb_middle": cur["ema9"] > cur["bb_middle"],
-        "vwap_above_bb_upper": cur["vwap"] > cur["bb_upper"],
+        "ema_above_bb_middle": ema_above,
+        "close_above_bb_upper": close_above_upper,
         "ema_crossed_bb_middle": ema_crossed,
-        "vwap_crossed_bb_upper": vwap_crossed,
-        "ready": ema_crossed and vwap_crossed,
+        "close_crossed_bb_upper": close_crossed_upper,
+        "breakout": close_above_upper,
+        "ready": ema_above and close_above_upper,
         "price": cur["close"],
         "ema9": cur["ema9"],
         "bb_middle": cur["bb_middle"],

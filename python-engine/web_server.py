@@ -60,6 +60,11 @@ class DashboardData:
         self.bb_period = sc["bollinger_period"]
         self.bb_std = sc["bollinger_std"]
         self.ema_period = sc["ema_period"]
+        # WhatsApp microservice base URL (derive from the send-message URL).
+        wa_url = self.config["whatsapp"]["service_url"]
+        self.wa_base = wa_url.rsplit("/", 1)[0] if "/send-message" in wa_url else wa_url
+        self.wa_send_url = wa_url
+        self.target_phone = str(self.config["whatsapp"]["target_phone"])
 
     # ----- per-symbol series ------------------------------------------------- #
 
@@ -126,6 +131,90 @@ class DashboardData:
         s["max_daily_messages"] = self.config["whatsapp"]["max_daily_messages"]
         return s
 
+    # ----- WhatsApp proxy + sending ----------------------------------------- #
+
+    def wa_get(self, path):
+        """Proxy a GET to the WhatsApp microservice; tolerate it being down."""
+        try:
+            resp = requests.get(f"{self.wa_base}{path}", timeout=8)
+            return resp.json()
+        except Exception as exc:  # noqa: BLE001 - includes connection + non-JSON (404) errors
+            return {"error": f"whatsapp endpoint unavailable ({exc})",
+                    "service_url": self.wa_base}
+
+    def wa_status(self):
+        """Status with a /health fallback (older service builds lack /status)."""
+        st = self.wa_get("/status")
+        if "connected" not in st:
+            h = self.wa_get("/health")
+            if "connected" in h:
+                return {"connected": h["connected"], "queued": h.get("queued", 0),
+                        "me": None, "legacy": True}
+            return st
+        return st
+
+    def _format_buy_message(self, card, n, total):
+        sig = card["signal"] or {}
+
+        def fmt(v):
+            return f"₹{v:,.2f}" if v is not None else "N/A"
+
+        return (
+            "🟢 STOCK ALERT — READY TO BUY\n\n"
+            f"Symbol: {card['symbol']}\n"
+            f"Name: {card.get('name', card['symbol'])}\n\n"
+            f"💰 Price: {fmt(sig.get('price'))}\n"
+            f"📊 9 EMA: {fmt(sig.get('ema9'))}\n"
+            f"📊 BB Middle: {fmt(sig.get('bb_middle'))}\n"
+            f"📊 BB Upper: {fmt(sig.get('bb_upper'))}\n\n"
+            "✅ Signal: 9 EMA above BB Middle (uptrend) + Close above BB Upper (breakout)\n"
+            f"📅 As of: {sig.get('date')}\n"
+            "[Daily EOD signal]\n"
+            f"Alert {n}/{total}"
+        )
+
+    def send_ready(self):
+        """
+        Send a WhatsApp alert for every current ready-to-buy stock to the
+        configured number. Records each in alert_log so it shows in the
+        Notifications panel. Returns a per-symbol result list.
+        """
+        ready = [c for c in self.dashboard(limit=10000, flt="ready")["cards"]]
+        if not ready:
+            return {"sent": 0, "ready": 0, "results": [],
+                    "note": "No stocks are ready to buy right now."}
+
+        date = now_ist().strftime("%Y-%m-%d")
+        results = []
+        sent = 0
+        for i, card in enumerate(ready, 1):
+            message = self._format_buy_message(card, i, len(ready))
+            try:
+                resp = requests.post(
+                    self.wa_send_url,
+                    json={"phone": self.target_phone, "message": message},
+                    timeout=20,
+                )
+                ok = resp.status_code == 200 and resp.json().get("success")
+                detail = resp.text[:200]
+            except requests.RequestException as exc:
+                ok, detail = False, str(exc)
+
+            sig = card["signal"] or {}
+            self.db.record_alert(
+                card["symbol"], date, now_ist().strftime("%H:%M:%S"),
+                sig.get("price"), sig.get("ema9"), sig.get("bb_middle"),
+                sig.get("bb_upper"), sig.get("vwap"), sent=bool(ok),
+            )
+            if ok:
+                self.db.increment_messages_sent(date, 1)
+                self.db.increment_stocks_matched(date, 1)
+                sent += 1
+            results.append({"symbol": card["symbol"], "ok": bool(ok), "detail": detail})
+
+        return {"sent": sent, "ready": len(ready), "phone": self.target_phone,
+                "results": results}
+
     def send_test(self):
         """Fire a test message at the WhatsApp service so 'notifications' are visibly working."""
         wa = self.config["whatsapp"]
@@ -152,8 +241,8 @@ def _passes_filter(signal, flt):
         return bool(signal.get("ready"))
     if flt == "ema":
         return bool(signal.get("ema_crossed_bb_middle"))
-    if flt == "vwap":
-        return bool(signal.get("vwap_crossed_bb_upper"))
+    if flt in ("breakout", "vwap"):
+        return bool(signal.get("close_above_bb_upper"))
     return True
 
 
@@ -222,6 +311,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"alerts": self.data.alerts(limit)})
             elif path == "/api/stats":
                 self._send_json(self.data.stats())
+            elif path == "/api/whatsapp/status":
+                self._send_json(self.data.wa_status())
+            elif path == "/api/whatsapp/qr":
+                self._send_json(self.data.wa_get("/qr"))
+            elif path == "/api/whatsapp/history":
+                self._send_json(self.data.wa_get("/history?limit=100"))
             elif path.startswith("/api/"):
                 self._send_json({"error": "unknown endpoint", "path": path}, 404)
             else:
@@ -235,6 +330,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/api/send-test":
                 self._send_json(self.data.send_test())
+            elif parsed.path == "/api/whatsapp/send-ready":
+                self._send_json(self.data.send_ready())
             else:
                 self._send_json({"error": "unknown endpoint", "path": parsed.path}, 404)
         except Exception as exc:  # noqa: BLE001

@@ -7,6 +7,8 @@
   <link rel="stylesheet" href="styles.css" />
   <!-- TradingView Lightweight Charts (candlesticks + indicator overlays) -->
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <!-- QR code rendering for WhatsApp linking -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
   <header class="topbar">
@@ -32,7 +34,7 @@
       <button class="filter-btn active" data-filter="all">All</button>
       <button class="filter-btn" data-filter="ready">✅ Ready to Buy</button>
       <button class="filter-btn" data-filter="ema">9 EMA × BB Mid</button>
-      <button class="filter-btn" data-filter="vwap">VWAP × BB Upper</button>
+      <button class="filter-btn" data-filter="breakout">Breakout (Close × BB Upper)</button>
     </div>
 
     <div class="indicator-toggles" aria-label="Indicator lines">
@@ -42,6 +44,10 @@
     </div>
 
     <div class="spacer"></div>
+    <button id="waChip" class="wa-chip" title="WhatsApp status — click to open">
+      <span class="wa-dot" id="waDot"></span><span id="waChipText">WhatsApp…</span>
+    </button>
+    <button id="sendReadyBtn" class="send-ready-btn" title="Send all ready-to-buy alerts to your number">📤 Send Ready-to-Buy</button>
     <button id="notifBtn" class="notif-btn">🔔 Notifications <span class="badge" id="notifBadge">0</span></button>
     <button id="refreshBtn" class="refresh-btn" title="Refresh data">⟳</button>
   </section>
@@ -53,14 +59,37 @@
   <!-- Notifications drawer -->
   <aside id="drawer" class="drawer">
     <div class="drawer-head">
-      <h2>🔔 Notifications</h2>
+      <h2>🔔 WhatsApp & Alerts</h2>
       <button id="drawerClose" class="icon-btn">✕</button>
     </div>
+
+    <!-- WhatsApp connection status + QR -->
+    <div class="wa-status" id="waStatus">
+      <div class="wa-status-row">
+        <span class="wa-dot big" id="waDotBig"></span>
+        <div>
+          <div class="wa-state" id="waState">Checking…</div>
+          <div class="wa-me" id="waMe"></div>
+        </div>
+      </div>
+      <div class="wa-qr" id="waQrBox" hidden>
+        <p class="wa-qr-hint">Open WhatsApp → <b>Linked Devices</b> → <b>Link a Device</b> and scan:</p>
+        <canvas id="waQrCanvas"></canvas>
+      </div>
+    </div>
+
     <div class="drawer-actions">
-      <button id="sendTestBtn" class="test-btn">Send test WhatsApp alert</button>
+      <button id="sendReadyBtn2" class="test-btn primary">📤 Send Ready-to-Buy alerts now</button>
+      <button id="sendTestBtn" class="test-btn">Send test message</button>
       <p id="testResult" class="test-result"></p>
     </div>
-    <div id="notifList" class="notif-list"></div>
+
+    <div class="drawer-tabs">
+      <button class="tab-btn active" data-tab="sent">Sent (WhatsApp)</button>
+      <button class="tab-btn" data-tab="alerts">Alert log</button>
+    </div>
+    <div id="waHistory" class="notif-list"></div>
+    <div id="notifList" class="notif-list" hidden></div>
   </aside>
   <div id="overlay" class="overlay"></div>
 

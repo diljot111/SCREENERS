@@ -30,6 +30,10 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 let sock = null;
 let isConnected = false;
 let reconnectAttempts = 0;
+let currentQR = null;        // latest QR string (null once connected)
+let meInfo = null;           // { id, name } of the linked account
+const sentHistory = [];      // in-memory log of messages sent (most recent last)
+const MAX_HISTORY = 200;
 
 // --- Outgoing message queue (serialised, rate-limited) -------------------- //
 
@@ -71,8 +75,15 @@ async function doSend(phone, message) {
   const jid = `${String(phone).replace(/\D/g, '')}@s.whatsapp.net`;
   const sent = await sock.sendMessage(jid, { text: message });
   const messageId = sent?.key?.id || null;
-  logger.info({ phone, messageId, ts: new Date().toISOString() }, 'message sent');
+  const ts = new Date().toISOString();
+  logger.info({ phone, messageId, ts }, 'message sent');
+  recordHistory({ phone: String(phone), message, messageId, ts, success: true });
   return { success: true, messageId };
+}
+
+function recordHistory(entry) {
+  sentHistory.push(entry);
+  if (sentHistory.length > MAX_HISTORY) sentHistory.shift();
 }
 
 function sleep(ms) {
@@ -99,13 +110,16 @@ async function startSocket() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      currentQR = qr; // expose to the dashboard via GET /qr
       console.log('\n📱 Scan this QR code with WhatsApp (Linked Devices):\n');
       qrcode.generate(qr, { small: true });
     }
 
     if (connection === 'open') {
       isConnected = true;
+      currentQR = null;
       reconnectAttempts = 0;
+      meInfo = sock?.user ? { id: sock.user.id, name: sock.user.name || null } : null;
       logger.info('WhatsApp connection open');
       drainQueue(); // flush anything queued while disconnected
     } else if (connection === 'close') {
@@ -134,8 +148,39 @@ async function startSocket() {
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
+// Allow the dashboard (served from a different port) to call this service.
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', connected: isConnected, queued: queue.length });
+});
+
+// Connection status for the dashboard badge.
+app.get('/status', (req, res) => {
+  res.json({
+    connected: isConnected,
+    hasQR: !!currentQR,
+    me: meInfo,
+    queued: queue.length,
+    sentCount: sentHistory.length,
+  });
+});
+
+// Current QR string (for the dashboard to render). Empty when already linked.
+app.get('/qr', (req, res) => {
+  res.json({ connected: isConnected, qr: isConnected ? null : currentQR });
+});
+
+// History of messages this service has sent (most recent first).
+app.get('/history', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 100, MAX_HISTORY);
+  res.json({ messages: sentHistory.slice(-limit).reverse() });
 });
 
 app.post('/send-message', async (req, res) => {

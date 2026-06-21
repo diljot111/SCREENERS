@@ -46,7 +46,7 @@ function passesFilter(sig, flt) {
   if (!sig) return false;
   if (flt === "ready") return !!sig.ready;
   if (flt === "ema") return !!sig.ema_crossed_bb_middle;
-  if (flt === "vwap") return !!sig.vwap_crossed_bb_upper;
+  if (flt === "breakout" || flt === "vwap") return !!sig.close_above_bb_upper;
   return true;
 }
 
@@ -109,9 +109,10 @@ function buildCard(card) {
 
 function signalHint(sig) {
   if (!sig || sig.ready === undefined) return "Insufficient data";
+  if (sig.close_crossed_bb_upper) return "Breakout ▲";
+  if (sig.close_above_bb_upper) return "Above upper band";
   if (sig.ema_crossed_bb_middle) return "9 EMA crossed ▲";
-  if (sig.vwap_crossed_bb_upper) return "VWAP crossed ▲";
-  if (sig.ema_above_bb_middle && sig.vwap_above_bb_upper) return "Both above bands";
+  if (sig.ema_above_bb_middle) return "Uptrend";
   return "Watching";
 }
 
@@ -255,11 +256,29 @@ function wire() {
   $("#refreshBtn").addEventListener("click", loadDashboard);
 
   // drawer
-  const openDrawer = () => { $("#drawer").classList.add("open"); $("#overlay").classList.add("open"); loadAlerts(); };
-  const closeDrawer = () => { $("#drawer").classList.remove("open"); $("#overlay").classList.remove("open"); };
+  const openDrawer = () => {
+    $("#drawer").classList.add("open"); $("#overlay").classList.add("open");
+    loadAlerts(); loadWhatsApp(); startWaPolling();
+  };
+  const closeDrawer = () => {
+    $("#drawer").classList.remove("open"); $("#overlay").classList.remove("open");
+    stopWaPolling();
+  };
   $("#notifBtn").addEventListener("click", openDrawer);
+  $("#waChip").addEventListener("click", openDrawer);
   $("#drawerClose").addEventListener("click", closeDrawer);
   $("#overlay").addEventListener("click", closeDrawer);
+
+  // history tabs
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      const sent = btn.dataset.tab === "sent";
+      $("#waHistory").hidden = !sent;
+      $("#notifList").hidden = sent;
+    });
+  });
 
   $("#sendTestBtn").addEventListener("click", async () => {
     const res = $("#testResult");
@@ -268,10 +287,33 @@ function wire() {
       const r = await getJSON("/api/send-test", { method: "POST" });
       res.textContent = r.ok ? "✅ Sent to WhatsApp." : `❌ ${r.detail}`;
       res.className = "test-result " + (r.ok ? "ok" : "err");
+      loadWhatsApp();
     } catch (e) {
       res.textContent = "❌ " + e.message; res.className = "test-result err";
     }
   });
+
+  const doSendReady = async () => {
+    const res = $("#testResult");
+    if (!$("#drawer").classList.contains("open")) openDrawer();
+    res.textContent = "Sending ready-to-buy alerts…"; res.className = "test-result";
+    try {
+      const r = await getJSON("/api/whatsapp/send-ready", { method: "POST" });
+      if (r.ready === 0) {
+        res.textContent = "ℹ️ No stocks are ready to buy right now.";
+        res.className = "test-result";
+      } else {
+        res.textContent = `✅ Sent ${r.sent}/${r.ready} alerts to ${r.phone || "your number"}.`
+          + (r.sent < r.ready ? " (some failed — is WhatsApp connected?)" : "");
+        res.className = "test-result " + (r.sent > 0 ? "ok" : "err");
+      }
+      loadWhatsApp(); loadAlerts();
+    } catch (e) {
+      res.textContent = "❌ " + e.message; res.className = "test-result err";
+    }
+  };
+  $("#sendReadyBtn").addEventListener("click", doSendReady);
+  $("#sendReadyBtn2").addEventListener("click", doSendReady);
 
   // keep charts sized on window resize (autoSize handles most, this is a nudge)
   window.addEventListener("resize", () => {
@@ -279,8 +321,77 @@ function wire() {
   });
 }
 
+/* ------------------------------------------------------- WhatsApp panel */
+let waPollTimer = null;
+function startWaPolling() { stopWaPolling(); waPollTimer = setInterval(loadWhatsApp, 4000); }
+function stopWaPolling() { if (waPollTimer) clearInterval(waPollTimer); waPollTimer = null; }
+
+function setWaChip(connected, text) {
+  $("#waDot").className = "wa-dot " + (connected ? "on" : "off");
+  $("#waChipText").textContent = text;
+  $("#waDotBig").className = "wa-dot big " + (connected ? "on" : "off");
+}
+
+async function loadWhatsApp() {
+  let status;
+  try {
+    status = await getJSON("/api/whatsapp/status");
+  } catch (_) {
+    status = { connected: false, error: "service unreachable" };
+  }
+  const connected = !!status.connected;
+  setWaChip(connected, connected ? "WhatsApp connected" : "WhatsApp offline");
+  $("#waState").textContent = connected ? "✅ Connected" : (status.error ? "⚠️ Service not running" : "❌ Not connected — scan QR");
+  $("#waMe").textContent = connected && status.me ? `${status.me.name || ""} (${(status.me.id || "").split(":")[0]})` : "";
+
+  // QR (only when not connected)
+  const qrBox = $("#waQrBox");
+  if (connected) {
+    qrBox.hidden = true;
+  } else {
+    try {
+      const q = await getJSON("/api/whatsapp/qr");
+      if (q.qr && window.QRCode) {
+        qrBox.hidden = false;
+        QRCode.toCanvas($("#waQrCanvas"), q.qr, { width: 230, margin: 1 }, () => {});
+      } else {
+        qrBox.hidden = true;
+      }
+    } catch (_) { qrBox.hidden = true; }
+  }
+
+  // sent-message history (from the WhatsApp service)
+  try {
+    const h = await getJSON("/api/whatsapp/history");
+    renderWaHistory(h.messages || []);
+  } catch (_) {
+    $("#waHistory").innerHTML = `<div class="notif-empty">WhatsApp service not running.<br/>Start it: <code>cd whatsapp-service &amp;&amp; node index.js</code></div>`;
+  }
+}
+
+function renderWaHistory(messages) {
+  const box = $("#waHistory");
+  if (!messages.length) {
+    box.innerHTML = `<div class="notif-empty">No WhatsApp messages sent yet.</div>`;
+    return;
+  }
+  box.innerHTML = messages.map((m) => {
+    const firstLine = (m.message || "").split("\n")[0];
+    const when = (m.ts || "").replace("T", " ").slice(0, 19);
+    return `<div class="notif-item">
+      <div class="ni-top"><span class="ni-sym">📤 ${m.phone || ""}</span>
+        <span class="sent-pill sent">SENT</span></div>
+      <div class="ni-row">${firstLine}</div>
+      <div class="ni-top"><span class="ni-time">${when}</span></div>
+    </div>`;
+  }).join("");
+}
+
 wire();
 loadDashboard();
 loadAlerts();
+loadWhatsApp();
 // light auto-refresh every 60s so live scans show up without a manual reload
 setInterval(loadDashboard, 60000);
+// keep the header WhatsApp chip fresh
+setInterval(loadWhatsApp, 15000);
