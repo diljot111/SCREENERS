@@ -26,6 +26,8 @@ screener uses, so the dashboard is consistent with the alerts that get sent.
 
 import json
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -67,6 +69,11 @@ class DashboardData:
         self.target_phone = str(self.config["whatsapp"]["target_phone"])
         # quality thresholds for the "ready to buy" signal (tunable in config.json)
         self.signal_opts = self.config.get("signal", {})
+        # in-memory cache of the computed dashboard (recomputing 2000+ symbols per
+        # request is slow); refreshed lazily past the TTL and warmed at startup.
+        self._cache = None
+        self._cache_lock = threading.Lock()
+        self._cache_ttl = 600  # seconds
 
     # ----- per-symbol series ------------------------------------------------- #
 
@@ -85,19 +92,11 @@ class DashboardData:
 
     # ----- dashboard summary ------------------------------------------------- #
 
-    def dashboard(self, limit=10000, flt="all", summary=False):
-        """
-        Card data for every symbol that has candles.
-
-        summary=True omits the heavy per-candle `series` (returns only the signal
-        + last price + change%), so the dashboard can list thousands of stocks in
-        a small payload and lazy-load each chart's data on demand. summary=False
-        embeds the full series (used for the static Vercel snapshot).
-        """
+    def _build_cache(self):
+        """Compute series + signal for every symbol once (the expensive pass)."""
         symbols = self.db.list_candle_symbols()
-        cards = []
+        entries = []
         ready_count = 0
-
         for symbol in symbols:
             candles = self.db.get_all_candles(symbol)
             if not candles:
@@ -106,25 +105,59 @@ class DashboardData:
             sig = evaluate_daily_signal(series, self.signal_opts)
             if sig and sig.get("ready"):
                 ready_count += 1
+            change_pct = None
+            if len(series) >= 2 and series[-1]["close"] and series[-2]["close"]:
+                change_pct = (series[-1]["close"] - series[-2]["close"]) / series[-2]["close"] * 100
+            entries.append({
+                "symbol": symbol,
+                "name": self.name_by_symbol.get(symbol, symbol),
+                "series": series,
+                "signal": sig,
+                "change_pct": change_pct,
+            })
+        return {"ts": time.time(), "entries": entries,
+                "ready_count": ready_count, "total": len(symbols)}
+
+    def _get_cache(self, force=False):
+        with self._cache_lock:
+            stale = self._cache is None or (time.time() - self._cache["ts"]) > self._cache_ttl
+            if force or stale:
+                log.info("Building dashboard cache (%d symbols)…",
+                         len(self.db.list_candle_symbols()))
+                self._cache = self._build_cache()
+                log.info("Dashboard cache ready: %d entries, %d ready-to-buy",
+                         len(self._cache["entries"]), self._cache["ready_count"])
+            return self._cache
+
+    def warm_cache(self):
+        """Build the cache up front (call in a background thread at startup)."""
+        self._get_cache(force=True)
+
+    def dashboard(self, limit=10000, flt="all", summary=False):
+        """
+        Card data for every symbol that has candles, served from the in-memory
+        cache (built once, refreshed past the TTL). summary=True omits the heavy
+        per-candle `series`; summary=False embeds it (used for the static snapshot).
+        """
+        cache = self._get_cache()
+        cards = []
+        for e in cache["entries"]:
+            sig = e["signal"]
             if not _passes_filter(sig, flt):
                 continue
-
-            name = self.name_by_symbol.get(symbol, symbol)
             if summary:
-                change_pct = None
-                if len(series) >= 2 and series[-1]["close"] and series[-2]["close"]:
-                    change_pct = (series[-1]["close"] - series[-2]["close"]) / series[-2]["close"] * 100
-                cards.append({"symbol": symbol, "name": name, "signal": sig,
-                              "change_pct": change_pct})
+                cards.append({"symbol": e["symbol"], "name": e["name"],
+                              "signal": sig, "change_pct": e["change_pct"]})
             else:
-                cards.append({"symbol": symbol, "name": name, "series": series, "signal": sig})
+                cards.append({"symbol": e["symbol"], "name": e["name"],
+                              "series": e["series"], "signal": sig})
             if len(cards) >= limit:
                 break
 
         return {
             "generated_at": now_ist().strftime("%Y-%m-%d %H:%M:%S"),
-            "total_symbols": len(symbols),
-            "ready_count": ready_count,
+            "total_symbols": cache["total"],
+            "ready_count": cache["ready_count"],
             "shown": len(cards),
             "filter": flt,
             "indicators": {
@@ -416,6 +449,8 @@ def main():
             pass
 
     Handler.data = DashboardData()
+    # Warm the dashboard cache in the background so the first page load is fast.
+    threading.Thread(target=Handler.data.warm_cache, name="cache-warm", daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     log.info("Dashboard server running at http://localhost:%d  (serving %s)", port, WEB_DIR)
     print(f"\n  Stock Screener dashboard:  http://localhost:{port}\n")
