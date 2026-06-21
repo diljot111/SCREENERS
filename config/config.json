@@ -25,6 +25,12 @@
         "websocket_subscribe_batch": 1000,
         "db_batch_size": 500
     },
+    "signal": {
+        "min_price": 100,
+        "min_avg_volume": 200000,
+        "require_fresh_breakout": true,
+        "require_volume_confirmation": true
+    },
     "database": {
         "path": "database/screener.db"
     },

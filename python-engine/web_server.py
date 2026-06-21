@@ -65,6 +65,8 @@ class DashboardData:
         self.wa_base = wa_url.rsplit("/", 1)[0] if "/send-message" in wa_url else wa_url
         self.wa_send_url = wa_url
         self.target_phone = str(self.config["whatsapp"]["target_phone"])
+        # quality thresholds for the "ready to buy" signal (tunable in config.json)
+        self.signal_opts = self.config.get("signal", {})
 
     # ----- per-symbol series ------------------------------------------------- #
 
@@ -73,7 +75,7 @@ class DashboardData:
         if not candles:
             return None
         series = compute_indicator_series(candles, self.bb_period, self.bb_std, self.ema_period)
-        signal = evaluate_daily_signal(series)
+        signal = evaluate_daily_signal(series, self.signal_opts)
         return {
             "symbol": symbol,
             "name": self.name_by_symbol.get(symbol, symbol),
@@ -101,7 +103,7 @@ class DashboardData:
             if not candles:
                 continue
             series = compute_indicator_series(candles, self.bb_period, self.bb_std, self.ema_period)
-            sig = evaluate_daily_signal(series)
+            sig = evaluate_daily_signal(series, self.signal_opts)
             if sig and sig.get("ready"):
                 ready_count += 1
             if not _passes_filter(sig, flt):

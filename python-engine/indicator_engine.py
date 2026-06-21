@@ -135,22 +135,34 @@ def compute_indicator_series(candles, bb_period=20, bb_std=2, ema_period=9):
     return out
 
 
-def evaluate_daily_signal(series):
+def evaluate_daily_signal(series, opts=None):
     """
     Evaluate a DAILY (end-of-day) buy signal for the dashboard.
 
     The live screener's signal (screener.check_signal) is an *intraday* dual
     crossover that needs a live VWAP feed and rarely fires on closed daily bars.
-    For an EOD dashboard we use the daily-appropriate equivalent of the same idea
-    — momentum turning up + a breakout:
+    For an EOD dashboard we use the daily-appropriate equivalent — momentum
+    turning up + a breakout — with optional quality filters so ``ready`` flags a
+    smaller, higher-quality set instead of every penny stock poking its band.
 
-        * uptrend   : 9 EMA is above the BB middle line, and
-        * breakout  : the close is above the BB upper band.
+    Base conditions:
+        * uptrend   : 9 EMA above the BB middle line
+        * breakout  : close above the BB upper band
 
-    ``ready`` is true when BOTH hold (a clean bullish breakout). We also expose
-    the *fresh-cross* flags (the value was at/below the band on the previous bar
-    and above it now) for the filter buttons. Returns None if data is short.
+    Quality filters (via ``opts``; all off by default for backward compat):
+        * require_fresh_breakout      : breakout must be NEW today (crossed up)
+        * min_price                   : close >= this (avoid penny stocks)
+        * min_avg_volume              : 20-day avg volume >= this (liquidity)
+        * require_volume_confirmation : today's volume >= 20-day avg volume
+
+    Returns the signal dict (with the quality flags), or None if data is short.
     """
+    opts = opts or {}
+    min_price = opts.get("min_price", 0) or 0
+    min_avg_volume = opts.get("min_avg_volume", 0) or 0
+    require_fresh = bool(opts.get("require_fresh_breakout", False))
+    require_vol_confirm = bool(opts.get("require_volume_confirmation", False))
+
     if len(series) < 2:
         return None
     prev, cur = series[-2], series[-1]
@@ -164,13 +176,31 @@ def evaluate_daily_signal(series):
     ema_crossed = (prev["ema9"] <= prev["bb_middle"]) and ema_above
     close_crossed_upper = (prev["close"] <= prev["bb_upper"]) and close_above_upper
 
+    # liquidity / volume context from the last 20 bars
+    vols = [r["volume"] for r in series[-20:] if r.get("volume")]
+    avg_volume = sum(vols) / len(vols) if vols else 0
+    today_volume = cur.get("volume") or 0
+    price = cur["close"]
+
+    breakout_ok = close_crossed_upper if require_fresh else close_above_upper
+    price_ok = price >= min_price
+    liquidity_ok = avg_volume >= min_avg_volume
+    volume_ok = (not require_vol_confirm) or (today_volume >= avg_volume and avg_volume > 0)
+
+    ready = ema_above and breakout_ok and price_ok and liquidity_ok and volume_ok
+
     return {
         "ema_above_bb_middle": ema_above,
         "close_above_bb_upper": close_above_upper,
         "ema_crossed_bb_middle": ema_crossed,
         "close_crossed_bb_upper": close_crossed_upper,
         "breakout": close_above_upper,
-        "ready": ema_above and close_above_upper,
+        "ready": ready,
+        "price_ok": price_ok,
+        "liquidity_ok": liquidity_ok,
+        "volume_ok": volume_ok,
+        "avg_volume": round(avg_volume),
+        "today_volume": today_volume,
         "price": cur["close"],
         "ema9": cur["ema9"],
         "bb_middle": cur["bb_middle"],
