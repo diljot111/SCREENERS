@@ -356,9 +356,13 @@ function wire() {
         res.textContent = "ℹ️ No stocks are ready to buy right now.";
         res.className = "test-result";
       } else {
-        res.textContent = `✅ Sent ${r.sent}/${r.ready} alerts to ${r.phone || "your number"}.`
-          + (r.sent < r.ready ? " (some failed — is WhatsApp connected?)" : "");
-        res.className = "test-result " + (r.sent > 0 ? "ok" : "err");
+        const extras = [];
+        if (r.skipped_already_sent) extras.push(`${r.skipped_already_sent} already sent today`);
+        if (r.skipped_cap) extras.push(`${r.skipped_cap} skipped (400/day cap)`);
+        res.textContent = `✅ Sent ${r.sent} alert(s) to ${r.phone}. `
+          + `Used ${r.sent_today}/${r.max_daily} today, ${r.remaining_today} left.`
+          + (extras.length ? ` — ${extras.join(", ")}.` : "");
+        res.className = "test-result " + (r.sent > 0 ? "ok" : "");
       }
       loadWhatsApp(); loadAlerts();
     } catch (e) {

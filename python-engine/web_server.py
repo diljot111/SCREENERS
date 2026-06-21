@@ -158,6 +158,23 @@ class DashboardData:
             return {"error": f"whatsapp endpoint unavailable ({exc})",
                     "service_url": self.wa_base}
 
+    def wa_history(self, limit=100):
+        """Sent-message history from the WhatsApp service, falling back to the DB
+        alert_log (sent rows) for older service builds that lack /history."""
+        h = self.wa_get("/history?limit=" + str(limit))
+        if isinstance(h, dict) and "messages" in h:
+            return h
+        # Fallback: synthesise from alert_log rows that were sent.
+        rows = [r for r in self.db.get_recent_alerts(limit) if r.get("message_sent")]
+        messages = [{
+            "phone": self.target_phone,
+            "message": f"🟢 STOCK ALERT — READY TO BUY  {r['symbol']}",
+            "ts": f"{r['date']}T{r.get('time', '')}",
+            "messageId": None,
+            "success": True,
+        } for r in rows]
+        return {"messages": messages, "source": "db_alert_log"}
+
     def wa_status(self):
         """Status with a /health fallback (older service builds lack /status)."""
         st = self.wa_get("/status")
@@ -191,20 +208,43 @@ class DashboardData:
 
     def send_ready(self):
         """
-        Send a WhatsApp alert for every current ready-to-buy stock to the
-        configured number. Records each in alert_log so it shows in the
-        Notifications panel. Returns a per-symbol result list.
+        Send a WhatsApp alert for current ready-to-buy stocks to the configured
+        number, respecting the daily message cap (max_daily_messages, default 400)
+        and de-duplicating: a symbol already alerted today is skipped. Records each
+        send in alert_log. Returns a summary + per-symbol result list.
         """
-        ready = [c for c in self.dashboard(limit=10000, flt="ready")["cards"]]
+        ready = [c for c in self.dashboard(limit=100000, flt="ready")["cards"]]
         if not ready:
             return {"sent": 0, "ready": 0, "results": [],
                     "note": "No stocks are ready to buy right now."}
 
         date = now_ist().strftime("%Y-%m-%d")
+        max_daily = int(self.config["whatsapp"]["max_daily_messages"])
+        already_sent_today = self.db.get_messages_sent(date)
+        remaining = max(0, max_daily - already_sent_today)
+
         results = []
         sent = 0
-        for i, card in enumerate(ready, 1):
-            message = self._format_buy_message(card, i, len(ready))
+        skipped_dupe = 0
+        capped = 0
+
+        for card in ready:
+            symbol = card["symbol"]
+
+            # Dedup: don't re-send a symbol already alerted today.
+            if self.db.has_alerted_today(symbol, date):
+                skipped_dupe += 1
+                results.append({"symbol": symbol, "ok": False, "detail": "already alerted today"})
+                continue
+
+            # Respect the daily cap (never exceed max_daily).
+            if self.db.get_messages_sent(date) >= max_daily:
+                capped += 1
+                results.append({"symbol": symbol, "ok": False, "detail": "daily cap reached"})
+                continue
+
+            alert_no = self.db.get_messages_sent(date) + 1
+            message = self._format_buy_message(card, alert_no, max_daily)
             try:
                 resp = requests.post(
                     self.wa_send_url,
@@ -218,7 +258,7 @@ class DashboardData:
 
             sig = card["signal"] or {}
             self.db.record_alert(
-                card["symbol"], date, now_ist().strftime("%H:%M:%S"),
+                symbol, date, now_ist().strftime("%H:%M:%S"),
                 sig.get("price"), sig.get("ema9"), sig.get("bb_middle"),
                 sig.get("bb_upper"), sig.get("vwap"), sent=bool(ok),
             )
@@ -226,10 +266,19 @@ class DashboardData:
                 self.db.increment_messages_sent(date, 1)
                 self.db.increment_stocks_matched(date, 1)
                 sent += 1
-            results.append({"symbol": card["symbol"], "ok": bool(ok), "detail": detail})
+            results.append({"symbol": symbol, "ok": bool(ok), "detail": detail})
 
-        return {"sent": sent, "ready": len(ready), "phone": self.target_phone,
-                "results": results}
+        return {
+            "sent": sent,
+            "ready": len(ready),
+            "skipped_already_sent": skipped_dupe,
+            "skipped_cap": capped,
+            "sent_today": self.db.get_messages_sent(date),
+            "max_daily": max_daily,
+            "remaining_today": max(0, max_daily - self.db.get_messages_sent(date)),
+            "phone": self.target_phone,
+            "results": results,
+        }
 
     def send_test(self):
         """Fire a test message at the WhatsApp service so 'notifications' are visibly working."""
@@ -333,7 +382,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/whatsapp/qr":
                 self._send_json(self.data.wa_get("/qr"))
             elif path == "/api/whatsapp/history":
-                self._send_json(self.data.wa_get("/history?limit=100"))
+                self._send_json(self.data.wa_history(100))
             elif path.startswith("/api/"):
                 self._send_json({"error": "unknown endpoint", "path": path}, 404)
             else:
